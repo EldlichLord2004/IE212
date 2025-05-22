@@ -10,6 +10,7 @@ from pyspark.sql.functions import col, explode, collect_list, udf, array_contain
 from pyspark.sql.types import FloatType, ArrayType, StringType
 from pyspark.ml.linalg import Vectors, VectorUDT, DenseVector
 import numpy as np
+from pyspark.ml.feature import Word2Vec
 
 # Create a Spark session
 spark = SparkSession.builder.appName("HybridRecommendationSystem") \
@@ -100,44 +101,79 @@ def build_collaborative_filtering(df):
     rmse = evaluator.evaluate(predictions)
     print(f"Collaborative Filtering RMSE = {rmse}")
     
+    #save model
+    model.save("als_model")
+    user_indexer.write().overwrite().save("user_indexer_model")
+    item_indexer.write().overwrite().save("item_indexer_model")
     return model, user_indexer, item_indexer
 
 # CONTENT-BASED FILTERING COMPONENT
+# def build_content_based_filtering(df):
+#     print("Building content-based filtering model...")
+    
+#     # Process categories
+#     categories_df = df.select("item_id", "categories").distinct()
+    
+#     # Flatten categories array
+#     exploded_df = categories_df.select("item_id", explode("categories").alias("category"))
+    
+#     # Create category features
+#     category_features = exploded_df.groupBy("item_id").agg(collect_list("category").alias("category_features"))
+    
+#     # Process review text
+#     text_df = df.select("item_id", "clean_review_text").distinct()
+    
+#     # Tokenize text
+#     tokenizer = Tokenizer(inputCol="clean_review_text", outputCol="words")
+#     wordsData = tokenizer.transform(text_df)
+    
+#     # Remove stop words
+#     remover = StopWordsRemover(inputCol="words", outputCol="filtered_words")
+#     filtered_data = remover.transform(wordsData)
+    
+#     # Create TF-IDF features
+#     hashingTF = HashingTF(inputCol="filtered_words", outputCol="rawFeatures", numFeatures=1000)
+#     featurized_data = hashingTF.transform(filtered_data)
+    
+#     idf = IDF(inputCol="rawFeatures", outputCol="text_features")
+#     idf_model = idf.fit(featurized_data)
+#     text_features = idf_model.transform(featurized_data)
+    
+#     # Combine text features with category features
+#     content_features = text_features.join(category_features, "item_id", "inner")
+    
+#     return content_features, idf_model, hashingTF, tokenizer, remover
+
 def build_content_based_filtering(df):
     print("Building content-based filtering model...")
-    
+
     # Process categories
     categories_df = df.select("item_id", "categories").distinct()
-    
-    # Flatten categories array
     exploded_df = categories_df.select("item_id", explode("categories").alias("category"))
-    
-    # Create category features
     category_features = exploded_df.groupBy("item_id").agg(collect_list("category").alias("category_features"))
-    
+
     # Process review text
     text_df = df.select("item_id", "clean_review_text").distinct()
-    
+
     # Tokenize text
     tokenizer = Tokenizer(inputCol="clean_review_text", outputCol="words")
     wordsData = tokenizer.transform(text_df)
-    
+
     # Remove stop words
     remover = StopWordsRemover(inputCol="words", outputCol="filtered_words")
     filtered_data = remover.transform(wordsData)
-    
-    # Create TF-IDF features
-    hashingTF = HashingTF(inputCol="filtered_words", outputCol="rawFeatures", numFeatures=1000)
-    featurized_data = hashingTF.transform(filtered_data)
-    
-    idf = IDF(inputCol="rawFeatures", outputCol="text_features")
-    idf_model = idf.fit(featurized_data)
-    text_features = idf_model.transform(featurized_data)
-    
+
+    # Use Word2Vec instead of TF-IDF
+    word2vec = Word2Vec(vectorSize=100, minCount=1, inputCol="filtered_words", outputCol="text_features")
+    w2v_model = word2vec.fit(filtered_data)
+    text_features = w2v_model.transform(filtered_data)
+
     # Combine text features with category features
     content_features = text_features.join(category_features, "item_id", "inner")
     
-    return content_features, idf_model, hashingTF, tokenizer, remover
+    w2v_model.save("w2v_model")
+
+    return content_features, w2v_model, tokenizer, remover
 
 # HYBRID RECOMMENDATION SYSTEM
 def build_hybrid_recommendation_system(user_reviews_df, metadata_df, sample_size=50000):
@@ -152,8 +188,9 @@ def build_hybrid_recommendation_system(user_reviews_df, metadata_df, sample_size
     cf_model, user_indexer, item_indexer = build_collaborative_filtering(hybrid_df)
     
     # Build content-based filtering model
-    content_features, idf_model, hashingTF, tokenizer, remover = build_content_based_filtering(hybrid_df)
-    
+    content_features, w2v_model, tokenizer, remover = build_content_based_filtering(hybrid_df)
+    # neu xai tf thi tra ve j j do
+
     # Pre-compute models and mappings to avoid serialization issues
     user_index_model = user_indexer.fit(hybrid_df)
     item_index_model = item_indexer.fit(hybrid_df)
@@ -244,6 +281,32 @@ def build_hybrid_recommendation_system(user_reviews_df, metadata_df, sample_size
     
     return get_recommendations
 
+def evaluate_hybrid_scores(recommendations_df):
+    """
+    Đánh giá các chỉ số thống kê của hybrid_score trong DataFrame recommendations.
+    """
+    if recommendations_df is None or recommendations_df.count() == 0:
+        print("No recommendations to evaluate.")
+        return
+
+    stats = recommendations_df.agg(
+        {"hybrid_score": "avg"}
+    ).withColumnRenamed("avg(hybrid_score)", "avg_hybrid_score")
+
+    min_max = recommendations_df.agg(
+        {"hybrid_score": "min"}
+    ).withColumnRenamed("min(hybrid_score)", "min_hybrid_score").join(
+        recommendations_df.agg({"hybrid_score": "max"}).withColumnRenamed("max(hybrid_score)", "max_hybrid_score")
+    )
+
+    stats = stats.join(min_max)
+
+    stats.show(truncate=False)
+
+# Ví dụ sử dụng sau khi đã có recommendations:
+# recommendations = get_recommendations(test_user, n=10)
+# evaluate_hybrid_scores(recommendations)
+
 # Execute the hybrid recommendation system
 def main():
     print("Building hybrid recommendation system...")
@@ -259,10 +322,13 @@ def main():
     print(f"\nGenerating recommendations for user: {test_user}")
     
     recommendations = get_recommendations(test_user, n=10)
+    
     if recommendations:
+        print("hybrid_score statistics:")
+        evaluate_hybrid_scores(recommendations)
         print("\nTop 10 Recommendations:")
         recommendations.show(10, False)
-    
+        
     print("Recommendation system built successfully!")
 
 if __name__ == "__main__":

@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ASIN Rating Lookup</title>
+</head>
+
+<body>
+    <h2>Tra cứu rating sản phẩm theo ASIN</h2>
+    <form method="post">
+        <label>Nhập mã ASIN:</label>
+        <input type="text" name="asin" required value="{{ asin or '' }}" title="Nhập mã ASIN" placeholder="Nhập mã ASIN">
+        <input type="submit" value="Tra cứu">
+    </form>
+    {% if asin %}
+    <h3>Kết quả cho ASIN: {{ asin }}</h3>
+    <p><b>Tên sản phẩm:</b> {{ product_title }}</p>
+    <p><b>Rating dự đoán/trung bình:</b> {{ predicted_rating }}</p>
+    <h4>Lịch sử rating:</h4>
+    <table border="1">
+        <tr>
+            <th>User</th>
+            <th>Rating</th>
+            <th>Review</th>
+        </tr>
+        {% for row in history %}
+        <tr>
+            <td>{{ row.user_id }}</td>
+            <td>{{ row.rating }}</td>
+            <td>{{ row.text }}</td>
+        </tr>
+        {% endfor %}
+    </table>
+    {% endif %}
+</body>
+
+</html>
